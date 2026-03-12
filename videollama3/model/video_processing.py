@@ -1,12 +1,31 @@
 """
 Video processing utilities for VideoLLaMA3.
 
-This module extracts the core video frame processing components:
-- Frame sampling (uniform or fps-based)
-- Video loading from file paths
-- Spatial downsampling of visual features
-- Adaptive Visual Tokenization (AVT) via compression mask generation
-- Differential Frame (DiffF) based token compression
+This module extracts the core video frame processing components from their
+original locations in the repository:
+
+.. list-table:: Source-file map
+   :header-rows: 1
+   :widths: 35 55 10
+
+   * - Function
+     - Original file
+     - Line(s)
+   * - ``frame_sample``
+     - ``inference/transformers_api/processing_videollama3.py``
+     - 96–124
+   * - ``load_video_from_ids``
+     - ``inference/transformers_api/processing_videollama3.py``
+     - 127–184
+   * - ``spatial_downsampling``
+     - ``videollama3/model/videollama3_arch.py``
+     - 31–50
+   * - ``get_compression_mask``  (AVT + DiffF)
+     - ``videollama3/model/videollama3_arch.py``
+     - 202–239  (``Videollama3MetaForCausalLM._get_compression_mask``)
+   * - ``compress_visual_tokens``
+     - ``videollama3/model/videollama3_arch.py``
+     - 241–268  (``Videollama3MetaForCausalLM._compress_visual_tokens``)
 """
 
 import math
@@ -21,6 +40,11 @@ import torch.nn as nn
 from decord import VideoReader, cpu
 
 
+# Default FPS assumptions for non-standard video sources
+_FRAME_DIR_FPS = 3   # directory of extracted frame images
+_GIF_FPS = 25        # animated GIF
+
+
 # ---------------------------------------------------------------------------
 # Frame Sampling
 # ---------------------------------------------------------------------------
@@ -28,6 +52,9 @@ from decord import VideoReader, cpu
 def frame_sample(duration: int, mode: str = 'uniform', num_frames: int = None,
                  vid_fps: float = None, fps: float = None) -> np.ndarray:
     """Sample frame indices from a video.
+
+    Source:
+        ``inference/transformers_api/processing_videollama3.py``, lines 96–124.
 
     Args:
         duration: Total number of frames in the video (or clip).
@@ -69,9 +96,12 @@ def load_video_from_ids(
 ):
     """Load frames from a video file (or directory of frames / GIF).
 
+    Source:
+        ``inference/transformers_api/processing_videollama3.py``, lines 127–184.
+
     Supports three input formats:
-    * A directory of image files (assumed 3 fps).
-    * An animated GIF.
+    * A directory of image files (assumed ``_FRAME_DIR_FPS`` FPS).
+    * An animated GIF (assumed ``_GIF_FPS`` FPS).
     * Any video container readable by *decord* (mp4, avi, …).
 
     Args:
@@ -99,11 +129,11 @@ def load_video_from_ids(
     # 1. Load video metadata
     if os.path.isdir(video_path):
         frame_files = sorted(os.listdir(video_path))
-        vid_fps = 3
+        vid_fps = _FRAME_DIR_FPS
         num_frames_of_video = len(frame_files)
     elif video_path.endswith('.gif'):
         gif_reader = imageio.get_reader(video_path)
-        vid_fps = 25
+        vid_fps = _GIF_FPS
         num_frames_of_video = len(gif_reader)
     else:
         vreader = VideoReader(video_path, ctx=cpu(0), num_threads=2)
@@ -161,6 +191,10 @@ def load_video_from_ids(
 def spatial_downsampling(features: torch.Tensor, grid_thws, stride: int = 2) -> torch.Tensor:
     """Spatially downsample packed visual feature tokens via bilinear interpolation.
 
+    Source:
+        ``videollama3/model/videollama3_arch.py``, lines 31–50
+        (module-level function ``spatial_downsampling``).
+
     Args:
         features: Packed feature tensor of shape ``(N, C)`` where ``N`` is the
             total number of tokens across all images/frames in the batch.
@@ -208,6 +242,10 @@ def get_compression_mask(
     min_tokens: int = 1,
 ) -> torch.BoolTensor:
     """Compute the Adaptive Visual Tokenization (AVT) compression mask.
+
+    Source:
+        ``videollama3/model/videollama3_arch.py``, lines 202–239
+        (``Videollama3MetaForCausalLM._get_compression_mask``).
 
     For each video in the batch the mask identifies which spatial tokens are
     *sufficiently different* from the previous frame (Differential Frame /
@@ -288,6 +326,10 @@ def compress_visual_tokens(
     labels: Optional[torch.Tensor] = None,
 ):
     """Apply the AVT compression mask to remove redundant visual tokens.
+
+    Source:
+        ``videollama3/model/videollama3_arch.py``, lines 241–268
+        (``Videollama3MetaForCausalLM._compress_visual_tokens``).
 
     Given a flat (batch-merged) sequence of token IDs and corresponding
     multimodal features, this function:
